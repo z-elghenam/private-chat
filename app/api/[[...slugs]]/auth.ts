@@ -12,7 +12,7 @@ export class AuthError extends Error {
   }
 }
 
-function getRoomIdFromRequest(request: Request): string | null {
+export function getRoomIdFromRequest(request: Request): string | null {
   const url = new URL(request.url);
   const queryRoomId = url.searchParams.get("roomId");
   if (queryRoomId) {
@@ -27,7 +27,7 @@ function getRoomIdFromRequest(request: Request): string | null {
   return request.headers.get("x-room-id");
 }
 
-function getTokenFromRequest(request: Request): string | null {
+export function getTokenFromRequest(request: Request): string | null {
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) {
     const headerToken = authorization.slice("Bearer ".length).trim();
@@ -54,30 +54,38 @@ function getTokenFromRequest(request: Request): string | null {
   return value || null;
 }
 
+export async function authenticateRequest(request: Request): Promise<{
+  roomId: string;
+  token: string;
+  connected: true;
+}> {
+  const roomId = getRoomIdFromRequest(request);
+  if (!roomId) {
+    throw new AuthError("Missing room ID");
+  }
+
+  const token = getTokenFromRequest(request);
+  if (!token) {
+    throw new AuthError("Missing authentication token");
+  }
+
+  const connected = (await redis.sismember(roomTokensKey(roomId), token)) === 1;
+  if (!connected) {
+    throw new AuthError("Invalid authentication token");
+  }
+
+  return {
+    roomId,
+    token,
+    connected: true,
+  };
+}
+
 export const auth = new Elysia({
   name: "auth",
 })
   .derive(async ({ request }) => {
-    const roomId = getRoomIdFromRequest(request);
-    if (!roomId) {
-      throw new AuthError("Missing room ID");
-    }
-
-    const token = getTokenFromRequest(request);
-    if (!token) {
-      throw new AuthError("Missing authentication token");
-    }
-
-    const connected = (await redis.sismember(roomTokensKey(roomId), token)) === 1;
-    if (!connected) {
-      throw new AuthError("Invalid authentication token");
-    }
-
-    return {
-      roomId,
-      token,
-      connected,
-    };
+    return authenticateRequest(request);
   })
   .onError(({ error, set }) => {
     if (error instanceof AuthError) {
