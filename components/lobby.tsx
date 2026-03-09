@@ -1,7 +1,9 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useMutation } from "@tanstack/react-query";
+import { useRouter, useSearchParams } from "next/navigation";
 
+import { client } from "@/lib/client";
 import { useUsername } from "@/hooks/use-username";
 
 type LobbyError = {
@@ -37,9 +39,43 @@ function getLobbyError(
   return null;
 }
 
+function extractRoomId(result: unknown): string | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  const directRoomId = (result as { roomId?: unknown }).roomId;
+  if (typeof directRoomId === "string") {
+    return directRoomId;
+  }
+
+  const nestedRoomId = (result as { data?: { roomId?: unknown } }).data?.roomId;
+  if (typeof nestedRoomId === "string") {
+    return nestedRoomId;
+  }
+
+  return null;
+}
+
 export function Lobby() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const username = useUsername();
+  const createRoomMutation = useMutation({
+    mutationFn: async () => {
+      const response = await client.api.room.post({});
+      const roomId = extractRoomId(response);
+
+      if (!roomId) {
+        throw new Error("Failed to create room.");
+      }
+
+      return roomId;
+    },
+    onSuccess: (roomId) => {
+      router.push(`/room/${roomId}`);
+    },
+  });
 
   const lobbyError = getLobbyError(
     searchParams.get("destroyed"),
@@ -73,10 +109,21 @@ export function Lobby() {
             </div>
             <button
               type="button"
+              onClick={() => createRoomMutation.mutate()}
+              disabled={createRoomMutation.isPending}
               className="w-full bg-zinc-100 text-black p-3 text-sm font-bold hover:bg-zinc-50 hover:text-black transition-colors mt-2 cursor-pointer disabled:opacity-50"
             >
-              create secure room
+              {createRoomMutation.isPending
+                ? "creating secure room..."
+                : "create secure room"}
             </button>
+            {createRoomMutation.isError ? (
+              <p className="text-sm text-red-300">
+                {createRoomMutation.error instanceof Error
+                  ? createRoomMutation.error.message
+                  : "Failed to create room."}
+              </p>
+            ) : null}
           </div>
         </div>
       </div>
