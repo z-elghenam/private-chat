@@ -2,13 +2,17 @@ import { Elysia } from "elysia";
 import { nanoid } from "nanoid";
 import { ZodError, z } from "zod";
 
+import { AuthError, authenticateRequest } from "@/app/api/[[...slugs]]/auth";
 import {
   ROOM_TTL_SECONDS,
   parseRoomMeta,
   redis,
+  roomHistoryKey,
+  roomMessagesKey,
   roomMetaKey,
+  roomTokensKey,
 } from "@/lib/redis";
-import { authMiddleware } from "@/server/middleware/auth";
+import { realtime } from "@/lib/realtime";
 
 const createRoomBodySchema = z.object({}).optional();
 
@@ -16,7 +20,7 @@ const roomTtlQuerySchema = z.object({
   roomId: z.string().min(1),
 });
 
-const destroyRoomBodySchema = z.object({
+const destroyRoomQuerySchema = z.object({
   roomId: z.string().min(1),
 });
 
@@ -24,6 +28,14 @@ export const roomsRouter = new Elysia({
   prefix: "/room",
 })
   .onError(({ error, set }) => {
+    if (error instanceof AuthError) {
+      set.status = 401;
+      return {
+        error: "unauthorized",
+        message: error.message,
+      };
+    }
+
     if (error instanceof ZodError) {
       set.status = 400;
       return {
@@ -32,11 +44,8 @@ export const roomsRouter = new Elysia({
       };
     }
   })
-  .post("/", async ({ request }) => {
-    const rawBody = request.headers.get("content-length")
-      ? ((await request.json()) as unknown)
-      : undefined;
-    createRoomBodySchema.parse(rawBody);
+  .post("/", async ({ body }) => {
+    createRoomBodySchema.parse(body);
 
     const roomId = nanoid(8);
     const key = roomMetaKey(roomId);
@@ -52,16 +61,18 @@ export const roomsRouter = new Elysia({
       roomId,
     };
   })
-  .group("", (protectedApp) =>
-    protectedApp
-      .use(authMiddleware)
-      .get("/ttl", ({ query, authError, authToken, set }) => {
-        if (authError || !authToken) {
-          set.status = 401;
-          return authError;
+  .group("", (protectedApp) => {
+    return protectedApp
+      .get("/ttl", async ({ request, query, set }) => {
+        const { roomId: authRoomId } = await authenticateRequest(request);
+        const { roomId } = roomTtlQuerySchema.parse(query);
+        if (roomId !== authRoomId) {
+          set.status = 403;
+          return {
+            error: "forbidden",
+          };
         }
 
-        const { roomId } = roomTtlQuerySchema.parse(query);
         const key = roomMetaKey(roomId);
         const room = parseRoomMeta(await redis.hgetall(key));
 
@@ -79,14 +90,17 @@ export const roomsRouter = new Elysia({
           connected: room.connected,
         };
       })
-      .delete("/", async ({ request, authError, authToken, set }) => {
-        if (authError || !authToken) {
-          set.status = 401;
-          return authError;
+      .delete("/", async ({ request, query, set }) => {
+        const { roomId: authRoomId } = await authenticateRequest(request);
+        const parsedQuery = destroyRoomQuerySchema.parse(query);
+        if (parsedQuery.roomId !== authRoomId) {
+          set.status = 403;
+          return {
+            error: "forbidden",
+          };
         }
 
-        const body = destroyRoomBodySchema.parse(await request.json());
-        const key = roomMetaKey(body.roomId);
+        const key = roomMetaKey(parsedQuery.roomId);
         const room = await redis.hgetall(key);
 
         if (!room) {
@@ -96,11 +110,19 @@ export const roomsRouter = new Elysia({
           };
         }
 
-        await redis.del(key);
+        await realtime.channel(parsedQuery.roomId).emit("chat-destroy", {
+          isDestroyed: true,
+        });
+        await Promise.all([
+          redis.del(key),
+          redis.del(roomMessagesKey(parsedQuery.roomId)),
+          redis.del(roomTokensKey(parsedQuery.roomId)),
+          redis.del(roomHistoryKey(parsedQuery.roomId)),
+        ]);
 
         return {
           ok: true,
-          roomId: body.roomId,
+          roomId: parsedQuery.roomId,
         };
-      }),
-  );
+      });
+  });
