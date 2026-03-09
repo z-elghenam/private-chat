@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Private Chat
 
-## Getting Started
+A private, self-destructing chat room app built with Next.js, Elysia, Upstash Redis, and Upstash Realtime.
 
-First, run the development server:
+## Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Lobby page with username generation and room creation
+- Protected room routes with token-based access
+- Real-time messaging across connected clients
+- 10-minute room TTL with countdown timer
+- Room destruction with data wipe and real-time broadcast
+- Error handling for:
+  - full room
+  - room not found/expired
+  - unauthorized access
+
+## Tech Stack
+
+- Next.js (App Router)
+- React + TypeScript
+- TanStack Query
+- Elysia + Eden client
+- Upstash Redis
+- Upstash Realtime
+- Tailwind CSS
+- date-fns
+
+## Environment Variables
+
+Create `.env` with:
+
+```env
+UPSTASH_REDIS_REST_URL=your_upstash_redis_rest_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_rest_token
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Run Locally
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Open `http://localhost:3000`.
 
-## Learn More
+## Main Routes
 
-To learn more about Next.js, take a look at the following resources:
+- `/` lobby page
+- `/room/[roomId]` room page
+- `/api/[[...slugs]]` Elysia API catch-all
+- `/api/realtime` Upstash Realtime handler
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## High-Level Architecture
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `proxy.ts`:
+  - guards `/room/:path*`
+  - validates room existence/capacity
+  - issues `x-token` cookie
+- `src/server/routers/rooms.ts`:
+  - create room
+  - fetch TTL
+  - destroy room (emit `chat-destroy`, delete metadata/messages/tokens/history)
+- `src/server/routers/messages.ts`:
+  - send message
+  - fetch message history
+  - emits `chat-message`
+- `app/room/[roomId]/page.tsx`:
+  - query message history
+  - subscribe to realtime events
+  - handle timer and destruction redirects
 
-## Deploy on Vercel
+## Scripts
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `npm run dev` start development server
+- `npm run lint` run ESLint
+- `npm run build` create production build
+- `npm run start` run production server
