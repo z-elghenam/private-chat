@@ -1,7 +1,6 @@
-import { Redis } from "@upstash/redis";
 import { Elysia } from "elysia";
 
-const redis = Redis.fromEnv();
+import { redis, roomTokensKey } from "@/lib/redis";
 
 export class AuthError extends Error {
   readonly status: number;
@@ -69,7 +68,7 @@ export const auth = new Elysia({
       throw new AuthError("Missing authentication token");
     }
 
-    const connected = (await redis.sismember(`room:${roomId}:tokens`, token)) === 1;
+    const connected = (await redis.sismember(roomTokensKey(roomId), token)) === 1;
     if (!connected) {
       throw new AuthError("Invalid authentication token");
     }

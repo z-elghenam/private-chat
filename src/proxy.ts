@@ -1,13 +1,12 @@
-import { Redis } from "@upstash/redis";
 import { nanoid } from "nanoid";
 import { NextRequest, NextResponse } from "next/server";
+
+import { redis, roomMetaKey, roomTokensKey } from "@/lib/redis";
 
 const ROOM_PATH_REGEX = /^\/room\/([^/]+)/;
 const TOKEN_COOKIE_NAME = "x-token";
 const MAX_ROOM_USERS = 2;
 const TOKEN_TTL_SECONDS = 60 * 60 * 24;
-
-const redis = Redis.fromEnv();
 
 function redirectToLobby(
   request: NextRequest,
@@ -28,7 +27,7 @@ function getRoomId(pathname: string): string | null {
 }
 
 async function roomExists(roomId: string): Promise<boolean> {
-  const existsCount = await redis.exists(`room:${roomId}`, `room:${roomId}:meta`);
+  const existsCount = await redis.exists(roomMetaKey(roomId));
   return existsCount > 0;
 }
 
@@ -44,10 +43,10 @@ export async function proxy(request: NextRequest) {
     return redirectToLobby(request, { error: "room-not-found" });
   }
 
-  const roomTokensKey = `room:${roomId}:tokens`;
+  const tokensKey = roomTokensKey(roomId);
   const existingToken = request.cookies.get(TOKEN_COOKIE_NAME)?.value;
   const hasValidExistingToken = existingToken
-    ? (await redis.sismember(roomTokensKey, existingToken)) === 1
+    ? (await redis.sismember(tokensKey, existingToken)) === 1
     : false;
 
   if (hasValidExistingToken) {
@@ -62,14 +61,14 @@ export async function proxy(request: NextRequest) {
     return response;
   }
 
-  const connectedUsers = await redis.scard(roomTokensKey);
+  const connectedUsers = await redis.scard(tokensKey);
   if (connectedUsers >= MAX_ROOM_USERS) {
     return redirectToLobby(request, { error: "room-full" });
   }
 
   const authToken = nanoid();
-  await redis.sadd(roomTokensKey, authToken);
-  await redis.expire(roomTokensKey, TOKEN_TTL_SECONDS);
+  await redis.sadd(tokensKey, authToken);
+  await redis.expire(tokensKey, TOKEN_TTL_SECONDS);
 
   const response = NextResponse.next();
   response.cookies.set(TOKEN_COOKIE_NAME, authToken, {

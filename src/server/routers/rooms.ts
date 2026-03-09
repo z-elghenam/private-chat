@@ -1,15 +1,16 @@
 import { Elysia } from "elysia";
-import { customAlphabet } from "nanoid";
+import { nanoid } from "nanoid";
 import { ZodError, z } from "zod";
 
+import {
+  ROOM_TTL_SECONDS,
+  parseRoomMeta,
+  redis,
+  roomMetaKey,
+} from "@/lib/redis";
 import { authMiddleware } from "@/server/middleware/auth";
 
-const createRoomId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 8);
-const DEFAULT_TTL_SECONDS = 15 * 60;
-
-const createRoomBodySchema = z.object({
-  ttlSeconds: z.number().int().positive().max(24 * 60 * 60).optional(),
-});
+const createRoomBodySchema = z.object({}).optional();
 
 const roomTtlQuerySchema = z.object({
   roomId: z.string().min(1),
@@ -18,17 +19,6 @@ const roomTtlQuerySchema = z.object({
 const destroyRoomBodySchema = z.object({
   roomId: z.string().min(1),
 });
-
-type RoomRecord = {
-  expiresAt: number;
-  ownerToken: string;
-};
-
-const roomStore = new Map<string, RoomRecord>();
-
-function getTtlRemaining(expiresAt: number): number {
-  return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
-}
 
 export const roomsRouter = new Elysia({
   prefix: "/room",
@@ -43,20 +33,23 @@ export const roomsRouter = new Elysia({
     }
   })
   .post("/", async ({ request }) => {
-    const body = createRoomBodySchema.parse(await request.json());
-    const roomId = createRoomId();
-    const ttlSeconds = body.ttlSeconds ?? DEFAULT_TTL_SECONDS;
-    const expiresAt = Date.now() + ttlSeconds * 1000;
+    const rawBody = request.headers.get("content-length")
+      ? ((await request.json()) as unknown)
+      : undefined;
+    createRoomBodySchema.parse(rawBody);
 
-    roomStore.set(roomId, {
-      expiresAt,
-      ownerToken: "",
+    const roomId = nanoid(8);
+    const key = roomMetaKey(roomId);
+    const createdAt = Date.now();
+
+    await redis.hset(key, {
+      connected: JSON.stringify([]),
+      createdAt: String(createdAt),
     });
+    await redis.expire(key, ROOM_TTL_SECONDS);
 
     return {
       roomId,
-      ttlSeconds,
-      expiresAt,
     };
   })
   .group("", (protectedApp) =>
@@ -69,7 +62,8 @@ export const roomsRouter = new Elysia({
         }
 
         const { roomId } = roomTtlQuerySchema.parse(query);
-        const room = roomStore.get(roomId);
+        const key = roomMetaKey(roomId);
+        const room = parseRoomMeta(await redis.hgetall(key));
 
         if (!room) {
           set.status = 404;
@@ -80,7 +74,9 @@ export const roomsRouter = new Elysia({
 
         return {
           roomId,
-          ttlSeconds: getTtlRemaining(room.expiresAt),
+          ttlSeconds: await redis.ttl(key),
+          createdAt: room.createdAt,
+          connected: room.connected,
         };
       })
       .delete("/", async ({ request, authError, authToken, set }) => {
@@ -90,7 +86,8 @@ export const roomsRouter = new Elysia({
         }
 
         const body = destroyRoomBodySchema.parse(await request.json());
-        const room = roomStore.get(body.roomId);
+        const key = roomMetaKey(body.roomId);
+        const room = await redis.hgetall(key);
 
         if (!room) {
           set.status = 404;
@@ -99,7 +96,7 @@ export const roomsRouter = new Elysia({
           };
         }
 
-        roomStore.delete(body.roomId);
+        await redis.del(key);
 
         return {
           ok: true,
