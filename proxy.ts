@@ -57,18 +57,8 @@ function withClientIdCookie(response: NextResponse, clientId: string): NextRespo
 }
 
 function isNonUserRequest(request: NextRequest): boolean {
-  if (request.nextUrl.searchParams.has("_rsc")) {
-    return true;
-  }
-
   const purpose = request.headers.get("purpose")?.toLowerCase() ?? "";
   if (purpose.includes("prefetch")) {
-    return true;
-  }
-
-  const secFetchDest = request.headers.get("sec-fetch-dest")?.toLowerCase() ?? "";
-  const secFetchMode = request.headers.get("sec-fetch-mode")?.toLowerCase() ?? "";
-  if (secFetchDest && secFetchDest !== "document" && secFetchMode !== "navigate") {
     return true;
   }
 
